@@ -53,7 +53,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['signup'])) {
             $passwordHash = hashPassword($password);
             
             // Insert user into database
-            $stmt = $pdo->prepare("INSERT INTO users (username, email, password_hash, first_name, last_name, rating, complaints) VALUES (?, ?, ?, ?, ?, 5.0, 0)");
+            $stmt = $pdo->prepare("INSERT INTO users (username, email, password_hash, first_name, last_name, complaints, role) VALUES (?, ?, ?, ?, ?, 0, 'user')");
             $stmt->execute([$username, $email, $passwordHash, $firstName, $lastName]);
             
             // Get the newly created user - FIXED: using user_id instead of id
@@ -80,12 +80,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['signup'])) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GameSwap - Sign Up</title>
-    <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
-        /* Your existing CSS styles */
         :root {
             --primary: #4361ee;
             --secondary: #3f37c9;
@@ -95,22 +92,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['signup'])) {
             --warning: #f72585;
         }
         
+        /* UPDATED VIBRANT BACKGROUND CSS */
         body {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(-45deg, #ff00cc, #3333ff, #00ffff, #ff00cc);
+            background-size: 400% 400%;
+            animation: gradientShift 15s ease infinite;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             min-height: 100vh;
             display: flex;
             align-items: center;
         }
+
+        @keyframes gradientShift {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        /* END UPDATED BACKGROUND CSS */
         
         .auth-container {
             background: white;
             border-radius: 15px;
-            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.3); /* Increased shadow for contrast */
             overflow: hidden;
-            max-width: 450px;
+            max-width: 800px; /* Wider container for two columns */
             width: 100%;
             margin: 2rem auto;
+            display: flex; /* Enable flexbox for side-by-side content */
+        }
+
+        .auth-graphic {
+            flex: 1; /* Takes up 50% width */
+            background: linear-gradient(135deg, #4361ee, #00ffff);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+        }
+        
+        .auth-form-wrapper {
+            flex: 1; /* Takes up 50% width */
+            padding: 0;
         }
         
         .auth-header {
@@ -167,67 +189,88 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['signup'])) {
             font-size: 0.875rem;
             margin-top: 0.25rem;
         }
+
+        /* Mobile adjustments */
+        @media (max-width: 768px) {
+            .auth-container {
+                flex-direction: column;
+                max-width: 450px;
+            }
+            .auth-graphic {
+                height: 150px;
+            }
+        }
     </style>
 </head>
 <body>
-    <!-- Signup Form -->
     <div class="auth-container">
-        <div class="auth-header">
-            <h1><i class="fas fa-gamepad me-2"></i>GameSwap</h1>
-            <p class="mb-0">Create your account to start trading games</p>
+        
+        <div class="auth-graphic">
+            <div class="text-center text-white">
+                <i class="fas fa-headset fa-4x mb-3"></i>
+                <h2>Trade Your Games</h2>
+                <p class="mt-3 mb-0">Sign up and find new titles by trading your old ones with other enthusiasts!</p>
+                
+            </div>
         </div>
-        <div class="auth-body">
-            <form id="signupForm" method="POST">
-                <input type="hidden" name="signup" value="1">
-                <div class="row">
-                    <div class="col-md-6 mb-3">
-                        <label for="firstName" class="form-label">First Name</label>
-                        <input type="text" class="form-control" id="firstName" name="firstName" placeholder="First name" required value="<?php echo isset($_POST['firstName']) ? htmlspecialchars($_POST['firstName']) : ''; ?>">
-                        <?php if (isset($errors['firstName'])): ?>
-                            <div class="error-message"><?php echo htmlspecialchars($errors['firstName']); ?></div>
+
+        <div class="auth-form-wrapper">
+            <div class="auth-header">
+                <h1><i class="fas fa-gamepad me-2"></i>GameSwap</h1>
+                <p class="mb-0">Create your account to start trading games</p>
+            </div>
+            <div class="auth-body">
+                <form id="signupForm" method="POST">
+                    <input type="hidden" name="signup" value="1">
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="firstName" class="form-label">First Name</label>
+                            <input type="text" class="form-control" id="firstName" name="firstName" placeholder="First name" required value="<?php echo isset($_POST['firstName']) ? htmlspecialchars($_POST['firstName']) : ''; ?>">
+                            <?php if (isset($errors['firstName'])): ?>
+                                <div class="error-message"><?php echo htmlspecialchars($errors['firstName']); ?></div>
+                            <?php endif; ?>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="lastName" class="form-label">Last Name</label>
+                            <input type="text" class="form-control" id="lastName" name="lastName" placeholder="Last name" required value="<?php echo isset($_POST['lastName']) ? htmlspecialchars($_POST['lastName']) : ''; ?>">
+                            <?php if (isset($errors['lastName'])): ?>
+                                <div class="error-message"><?php echo htmlspecialchars($errors['lastName']); ?></div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="signupEmail" class="form-label">Email Address</label>
+                        <input type="email" class="form-control" id="signupEmail" name="email" placeholder="Enter your email" required value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>">
+                        <?php if (isset($errors['email'])): ?>
+                            <div class="error-message"><?php echo htmlspecialchars($errors['email']); ?></div>
+                            <?php endif; ?>
+                        </div>
+                    <div class="mb-3">
+                        <label for="signupPassword" class="form-label">Password</label>
+                        <input type="password" class="form-control" id="signupPassword" name="password" placeholder="Create a password" required>
+                        <?php if (isset($errors['password'])): ?>
+                            <div class="error-message"><?php echo htmlspecialchars($errors['password']); ?></div>
+                            <?php endif; ?>
+                        </div>
+                    <div class="mb-3">
+                        <label for="confirmPassword" class="form-label">Confirm Password</label>
+                        <input type="password" class="form-control" id="confirmPassword" name="confirmPassword" placeholder="Confirm your password" required>
+                        <?php if (isset($errors['confirmPassword'])): ?>
+                            <div class="error-message"><?php echo htmlspecialchars($errors['confirmPassword']); ?></div>
                         <?php endif; ?>
                     </div>
-                    <div class="col-md-6 mb-3">
-                        <label for="lastName" class="form-label">Last Name</label>
-                        <input type="text" class="form-control" id="lastName" name="lastName" placeholder="Last name" required value="<?php echo isset($_POST['lastName']) ? htmlspecialchars($_POST['lastName']) : ''; ?>">
-                        <?php if (isset($errors['lastName'])): ?>
-                            <div class="error-message"><?php echo htmlspecialchars($errors['lastName']); ?></div>
-                        <?php endif; ?>
-                    </div>
-                </div>
-                <div class="mb-3">
-                    <label for="signupEmail" class="form-label">Email Address</label>
-                    <input type="email" class="form-control" id="signupEmail" name="email" placeholder="Enter your email" required value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>">
-                    <?php if (isset($errors['email'])): ?>
-                        <div class="error-message"><?php echo htmlspecialchars($errors['email']); ?></div>
+                    <?php if (isset($errors['general'])): ?>
+                        <div class="alert alert-danger"><?php echo htmlspecialchars($errors['general']); ?></div>
                     <?php endif; ?>
+                    <button type="submit" class="btn btn-primary w-100">Create Account</button>
+                </form>
+                <div class="auth-switch">
+                    Already have an account? <a href="index.php">Login</a>
                 </div>
-                <div class="mb-3">
-                    <label for="signupPassword" class="form-label">Password</label>
-                    <input type="password" class="form-control" id="signupPassword" name="password" placeholder="Create a password" required>
-                    <?php if (isset($errors['password'])): ?>
-                        <div class="error-message"><?php echo htmlspecialchars($errors['password']); ?></div>
-                    <?php endif; ?>
-                </div>
-                <div class="mb-3">
-                    <label for="confirmPassword" class="form-label">Confirm Password</label>
-                    <input type="password" class="form-control" id="confirmPassword" name="confirmPassword" placeholder="Confirm your password" required>
-                    <?php if (isset($errors['confirmPassword'])): ?>
-                        <div class="error-message"><?php echo htmlspecialchars($errors['confirmPassword']); ?></div>
-                    <?php endif; ?>
-                </div>
-                <?php if (isset($errors['general'])): ?>
-                    <div class="alert alert-danger"><?php echo htmlspecialchars($errors['general']); ?></div>
-                <?php endif; ?>
-                <button type="submit" class="btn btn-primary w-100">Create Account</button>
-            </form>
-            <div class="auth-switch">
-                Already have an account? <a href="index.php">Login</a>
             </div>
         </div>
     </div>
 
-    <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

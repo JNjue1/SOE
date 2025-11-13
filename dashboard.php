@@ -4,303 +4,434 @@ requireLogin();
 
 $currentUser = getCurrentUser();
 
-// Handle add game form
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_game'])) {
-    $pdo = getDBConnection();
-    
-    try {
-        // Map form values to database enum values
+// Check for suspension status early (for UI visibility logic)
+$isSuspended = (int)$currentUser['is_suspended'] === 1;
+
+// --- BEGIN ACTION HANDLERS ---
+
+// Block all actions if suspended, except possibly a contact admin feature
+if ($isSuspended) {
+    // All normal actions below are skipped if $isSuspended is true
+} else {
+    // Handle add game form (UPDATED LOGIC)
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_game'])) {
+        $pdo = getDBConnection();
+        $errors = [];
+        
+        $gameTitle = $_POST['gameTitle'] ?? '';
+        $gameGenre = $_POST['gameGenre'] ?? '';
         $gameType = ($_POST['gameType'] == 'Video Game') ? 'video_game' : 'board_game';
-        $condition = strtolower($_POST['gameCondition']);
+        $condition = strtolower($_POST['gameCondition'] ?? '');
+        $ageYears = (int)($_POST['gameAge'] ?? 0);
+        $isForSale = isset($_POST['isForSale']) ? 1 : 0;
+        $salePrice = $isForSale ? ($_POST['salePrice'] ?? null) : null;
+        $isForLend = isset($_POST['isForLend']) ? 1 : 0;
+        $lendRate = $isForLend ? ($_POST['lendRate'] ?? null) : null;
         
-        // Insert game into database
-        $stmt = $pdo->prepare("INSERT INTO games (user_id, title, genre, game_type, `condition`, age_years, status) VALUES (?, ?, ?, ?, ?, ?, 'available')");
-        $stmt->execute([
-            $currentUser['user_id'],
-            $_POST['gameTitle'],
-            $_POST['gameGenre'],
-            $gameType,
-            $condition,
-            (int)$_POST['gameAge']
-        ]);
-        
-        header('Location: dashboard.php?success=game_added');
-        exit();
-        
-    } catch (PDOException $e) {
-        $error = 'Failed to add game: ' . $e->getMessage();
-    }
-}
+        // General Validation is assumed... focusing on new business logic:
 
-// Handle edit profile form
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_profile'])) {
-    $pdo = getDBConnection();
-    
-    try {
-        $displayName = $_POST['userNameInput'];
-        $email = $_POST['userEmail'];
-        $location = $_POST['userLocation'];
-        $bio = $_POST['userBio'];
-        
-        // Split display name into first and last name
-        $nameParts = explode(' ', $displayName, 2);
-        $firstName = $nameParts[0] ?? '';
-        $lastName = $nameParts[1] ?? '';
-        
-        // Update user in database
-        $stmt = $pdo->prepare("UPDATE users SET first_name = ?, last_name = ?, email = ?, location = ?, bio = ? WHERE user_id = ?");
-        $stmt->execute([$firstName, $lastName, $email, $location, $bio, $currentUser['user_id']]);
-        
-        // Refresh current user data
-        $stmt = $pdo->prepare("SELECT * FROM users WHERE user_id = ?");
-        $stmt->execute([$currentUser['user_id']]);
-        $_SESSION['current_user'] = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        header('Location: dashboard.php?success=profile_updated');
-        exit();
-        
-    } catch (PDOException $e) {
-        $error = 'Failed to update profile: ' . $e->getMessage();
-    }
-}
+        // 1. Selling/Full Price Rule Validation
+        if ($isForSale) {
+            if ($ageYears < 1 || ($condition !== 'good' && $condition !== 'excellent')) {
+                $errors['sell'] = 'Game must be at least 1 year old AND in good or excellent condition to be listed for sale.';
+            }
+            if (empty($salePrice) || !is_numeric($salePrice) || $salePrice <= 0) {
+                $errors['salePrice'] = 'Sale price must be set for games listed for sale.';
+            }
+        }
 
-// Handle start exchange form
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['start_exchange'])) {
-    $pdo = getDBConnection();
-    
-    try {
-        $exchangeGameId = $_POST['exchangeGame'];
-        $targetUsername = $_POST['targetUsername'];
-        $targetGame = $_POST['targetGame'];
-        
-        // Check if the game belongs to the user and is available
-        $stmt = $pdo->prepare("SELECT * FROM games WHERE game_id = ? AND user_id = ? AND status = 'available'");
-        $stmt->execute([$exchangeGameId, $currentUser['user_id']]);
-        $userGame = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if (!$userGame) {
-            throw new Exception("Invalid game selected or game not available");
+        // 2. Lending/Discounted Rate Rule Validation
+        if ($isForLend) {
+            if ($condition !== 'good' && $condition !== 'excellent') {
+                $errors['lend'] = 'Game must be in good or excellent condition to be lent.';
+            }
+            if (empty($lendRate) || !is_numeric($lendRate) || $lendRate <= 0) {
+                $errors['lendRate'] = 'Lend rate must be set for games listed for lending.';
+            }
         }
-        
-        // Find the target user
-        $stmt = $pdo->prepare("SELECT user_id, username FROM users WHERE username = ?");
-        $stmt->execute([$targetUsername]);
-        $targetUser = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if (!$targetUser) {
-            throw new Exception("User '$targetUsername' not found");
-        }
-        
-        if ($targetUser['user_id'] == $currentUser['user_id']) {
-            throw new Exception("Cannot exchange with yourself");
-        }
-        
-        // Create exchange transaction
-        $stmt = $pdo->prepare("INSERT INTO transactions (from_user_id, to_user_id, game_id, type, status, description) VALUES (?, ?, ?, 'exchange', 'pending', ?)");
-        $stmt->execute([
-            $currentUser['user_id'],
-            $targetUser['user_id'],
-            $exchangeGameId,
-            "Exchange request: " . $userGame['title'] . " for " . $targetGame
-        ]);
-        
-        // Update game status
-        $stmt = $pdo->prepare("UPDATE games SET status = 'pending_exchange' WHERE game_id = ?");
-        $stmt->execute([$exchangeGameId]);
-        
-        header('Location: dashboard.php?success=exchange_started');
-        exit();
-        
-    } catch (Exception $e) {
-        $error = 'Failed to start exchange: ' . $e->getMessage();
-    }
-}
 
-// Handle borrow request
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['borrow_request'])) {
-    $pdo = getDBConnection();
+        // If no errors, create user in database
+        if (empty($errors)) {
+            try {
+                // Determine initial status based on listing flags
+                $status = 'available';
+
+                // Insert game into database (UPDATED: Added listing fields)
+                $stmt = $pdo->prepare("INSERT INTO games (user_id, title, genre, game_type, `condition`, age_years, status, is_for_sale, sale_price, is_for_lend, lend_rate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->execute([
+                    $currentUser['user_id'],
+                    $gameTitle,
+                    $gameGenre,
+                    $gameType,
+                    $condition,
+                    $ageYears,
+                    $status,
+                    $isForSale,
+                    $salePrice,
+                    $isForLend,
+                    $lendRate
+                ]);
+                
+                header('Location: dashboard.php?success=game_added');
+                exit();
+                
+            } catch (PDOException $e) {
+                $error = 'Failed to add game: ' . $e->getMessage();
+            }
+        } else {
+            // Re-show modal with errors (simple implementation: set general error)
+            $error = 'Game listing failed due to validation errors. ' . implode(' ', $errors);
+        }
+    }
     
-    try {
-        $gameId = $_POST['game_id'];
-        $ownerUsername = $_POST['owner_username'];
+    // Handle edit profile form
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_profile'])) {
+        $pdo = getDBConnection();
         
-        // Get game and owner details
-        $stmt = $pdo->prepare("SELECT g.*, u.user_id as owner_id, u.username 
-                              FROM games g 
-                              JOIN users u ON g.user_id = u.user_id 
-                              WHERE g.game_id = ? AND g.status = 'available'");
-        $stmt->execute([$gameId]);
-        $game = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if (!$game) {
-            throw new Exception("Game not available for borrowing");
-        }
-        
-        if ($game['user_id'] == $currentUser['user_id']) {
-            throw new Exception("Cannot borrow your own game");
-        }
-        
-        // Create borrow request transaction
-        $stmt = $pdo->prepare("INSERT INTO transactions (from_user_id, to_user_id, game_id, type, status) VALUES (?, ?, ?, 'lend', 'pending')");
-        $stmt->execute([
-            $currentUser['user_id'],
-            $game['owner_id'],
-            $gameId
-        ]);
-        
-        // Create notification for game owner
-        $notificationMessage = $currentUser['username'] . " wants to borrow your game: " . $game['title'];
-        
-        // If notifications table exists, create notification
         try {
-            $stmt = $pdo->prepare("INSERT INTO notifications (user_id, from_user_id, game_id, type, message) VALUES (?, ?, ?, 'borrow_request', ?)");
-            $stmt->execute([
-                $game['owner_id'],
-                $currentUser['user_id'],
-                $gameId,
-                $notificationMessage
-            ]);
+            $displayName = $_POST['userNameInput'];
+            $email = $_POST['userEmail'];
+            $location = $_POST['userLocation'];
+            $bio = $_POST['userBio'];
+            
+            // Split display name into first and last name
+            $nameParts = explode(' ', $displayName, 2);
+            $firstName = $nameParts[0] ?? '';
+            $lastName = $nameParts[1] ?? '';
+            
+            // Update user in database
+            $stmt = $pdo->prepare("UPDATE users SET first_name = ?, last_name = ?, email = ?, location = ?, bio = ? WHERE user_id = ?");
+            $stmt->execute([$firstName, $lastName, $email, $location, $bio, $currentUser['user_id']]);
+            
+            // Refresh current user data
+            $stmt = $pdo->prepare("SELECT * FROM users WHERE user_id = ?");
+            $stmt->execute([$currentUser['user_id']]);
+            $_SESSION['current_user'] = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            header('Location: dashboard.php?success=profile_updated');
+            exit();
+            
         } catch (PDOException $e) {
-            // Notifications table might not exist, continue without notification
+            $error = 'Failed to update profile: ' . $e->getMessage();
         }
-        
-        // Update game status
-        $stmt = $pdo->prepare("UPDATE games SET status = 'pending_borrow' WHERE game_id = ?");
-        $stmt->execute([$gameId]);
-        
-        header('Location: dashboard.php?success=borrow_request_sent');
-        exit();
-        
-    } catch (Exception $e) {
-        $error = 'Failed to send borrow request: ' . $e->getMessage();
     }
-}
-
-// Handle borrow request approval
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['approve_borrow'])) {
-    $pdo = getDBConnection();
     
-    try {
-        $transactionId = $_POST['transaction_id'];
+    // Handle start exchange form
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['start_exchange'])) {
+        $pdo = getDBConnection();
         
-        // Update transaction status to active
-        $stmt = $pdo->prepare("UPDATE transactions SET status = 'active' WHERE transaction_id = ?");
-        $stmt->execute([$transactionId]);
-        
-        // Update game status to on_loan
-        $stmt = $pdo->prepare("UPDATE games SET status = 'on_loan' WHERE game_id = (SELECT game_id FROM transactions WHERE transaction_id = ?)");
-        $stmt->execute([$transactionId]);
-        
-        header('Location: dashboard.php?success=borrow_approved');
-        exit();
-        
-    } catch (Exception $e) {
-        $error = 'Failed to approve borrow request: ' . $e->getMessage();
-    }
-}
+        try {
+            $exchangeGameId = $_POST['exchangeGame'];
+            $targetGameId = $_POST['targetGameId']; 
+            
+            // 1. Validate the user's game
+            $stmt = $pdo->prepare("SELECT * FROM games WHERE game_id = ? AND user_id = ? AND status = 'available'");
+            $stmt->execute([$exchangeGameId, $currentUser['user_id']]);
+            $userGame = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$userGame) {
+                throw new Exception("Invalid game selected or game not available for exchange.");
+            }
+            
+            // 2. Get the target game and its owner's ID and username
+            $stmt = $pdo->prepare("SELECT g.title, u.user_id as target_user_id, u.username, u.is_suspended 
+                                  FROM games g JOIN users u ON g.user_id = u.user_id 
+                                  WHERE g.game_id = ? AND g.status = 'available'");
+            $stmt->execute([$targetGameId]);
+            $targetGameData = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$targetGameData) {
+                throw new Exception("Target game not found or not available.");
+            }
 
-// Handle borrow request decline
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['decline_borrow'])) {
-    $pdo = getDBConnection();
+            // CHECK: Prevent exchange with suspended user
+            if ((int)$targetGameData['is_suspended'] === 1) { 
+                throw new Exception("Cannot initiate exchange with a suspended user.");
+            }
+            
+            $targetUser = [
+                'user_id' => $targetGameData['target_user_id'],
+                'username' => $targetGameData['username']
+            ];
+            $targetGameTitle = $targetGameData['title'];
     
-    try {
-        $transactionId = $_POST['transaction_id'];
-        
-        // Update transaction status to cancelled
-        $stmt = $pdo->prepare("UPDATE transactions SET status = 'cancelled' WHERE transaction_id = ?");
-        $stmt->execute([$transactionId]);
-        
-        // Update game status back to available
-        $stmt = $pdo->prepare("UPDATE games SET status = 'available' WHERE game_id = (SELECT game_id FROM transactions WHERE transaction_id = ?)");
-        $stmt->execute([$transactionId]);
-        
-        header('Location: dashboard.php?success=borrow_declined');
-        exit();
-        
-    } catch (Exception $e) {
-        $error = 'Failed to decline borrow request: ' . $e->getMessage();
-    }
-}
-
-// Handle borrow request cancellation
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cancel_borrow'])) {
-    $pdo = getDBConnection();
-    
-    try {
-        $transactionId = $_POST['transaction_id'];
-        
-        // Update transaction status to cancelled
-        $stmt = $pdo->prepare("UPDATE transactions SET status = 'cancelled' WHERE transaction_id = ?");
-        $stmt->execute([$transactionId]);
-        
-        // Update game status back to available
-        $stmt = $pdo->prepare("UPDATE games SET status = 'available' WHERE game_id = (SELECT game_id FROM transactions WHERE transaction_id = ?)");
-        $stmt->execute([$transactionId]);
-        
-        header('Location: dashboard.php?success=borrow_cancelled');
-        exit();
-        
-    } catch (Exception $e) {
-        $error = 'Failed to cancel borrow request: ' . $e->getMessage();
-    }
-}
-
-// Handle complaint submission
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_complaint'])) {
-    $pdo = getDBConnection();
-    
-    try {
-        $complaintType = $_POST['complaintType'];
-        $targetUsername = $_POST['targetUsername'];
-        $transactionId = $_POST['transaction_id'] ?? null;
-        $description = $_POST['complaintDescription'];
-        
-        // Validate target user exists
-        $stmt = $pdo->prepare("SELECT user_id FROM users WHERE username = ?");
-        $stmt->execute([$targetUsername]);
-        $targetUser = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if (!$targetUser) {
-            throw new Exception("User '$targetUsername' not found");
+            if ($targetUser['user_id'] == $currentUser['user_id']) {
+                throw new Exception("Cannot exchange with yourself");
+            }
+            
+            // 3. Create exchange transaction
+            $stmt = $pdo->prepare("INSERT INTO transactions (from_user_id, to_user_id, game_id, type, status, description) VALUES (?, ?, ?, 'exchange', 'pending', ?)");
+            $stmt->execute([
+                $currentUser['user_id'],
+                $targetUser['user_id'],
+                $exchangeGameId,
+                "Exchange request: " . $userGame['title'] . " for " . $targetGameTitle
+            ]);
+            
+            // 4. Update game status
+            $stmt = $pdo->prepare("UPDATE games SET status = 'pending_exchange' WHERE game_id = ?");
+            $stmt->execute([$exchangeGameId]);
+            
+            header('Location: dashboard.php?success=exchange_started');
+            exit();
+            
+        } catch (Exception $e) {
+            $error = 'Failed to start exchange: ' . $e->getMessage();
         }
+    }
+    
+    // Handle borrow request
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['borrow_request'])) {
+        $pdo = getDBConnection();
         
-        if ($targetUser['user_id'] == $currentUser['user_id']) {
-            throw new Exception("Cannot file a complaint against yourself");
+        try {
+            $gameId = $_POST['game_id'];
+            $ownerUsername = $_POST['owner_username'];
+            
+            // Get game and owner details
+            $stmt = $pdo->prepare("SELECT g.*, u.user_id as owner_id, u.username, u.is_suspended
+                                  FROM games g 
+                                  JOIN users u ON g.user_id = u.user_id 
+                                  WHERE g.game_id = ? AND g.status = 'available'");
+            $stmt->execute([$gameId]);
+            $game = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$game) {
+                throw new Exception("Game not available for borrowing");
+            }
+
+            // CHECK: Prevent borrowing from suspended user
+            if ((int)$game['is_suspended'] === 1) { 
+                throw new Exception("Cannot initiate borrowing from a suspended user.");
+            }
+            
+            if ($game['user_id'] == $currentUser['user_id']) {
+                throw new Exception("Cannot borrow your own game");
+            }
+            
+            // Create borrow request transaction
+            $stmt = $pdo->prepare("INSERT INTO transactions (from_user_id, to_user_id, game_id, type, status) VALUES (?, ?, ?, 'lend', 'pending')");
+            $stmt->execute([
+                $currentUser['user_id'],
+                $game['owner_id'],
+                $gameId
+            ]);
+            
+            // Create notification for game owner
+            $notificationMessage = $currentUser['username'] . " wants to borrow your game: " . $game['title'];
+            
+            // If notifications table exists, create notification
+            try {
+                $stmt = $pdo->prepare("INSERT INTO notifications (user_id, from_user_id, game_id, type, message) VALUES (?, ?, ?, 'borrow_request', ?)");
+                $stmt->execute([
+                    $game['owner_id'],
+                    $currentUser['user_id'],
+                    $gameId,
+                    $notificationMessage
+                ]);
+            } catch (PDOException $e) {
+                // Notifications table might not exist, continue without notification
+            }
+            
+            // Update game status
+            $stmt = $pdo->prepare("UPDATE games SET status = 'pending_borrow' WHERE game_id = ?");
+            $stmt->execute([$gameId]);
+            
+            header('Location: dashboard.php?success=borrow_request_sent');
+            exit();
+            
+        } catch (Exception $e) {
+            $error = 'Failed to send borrow request: ' . $e->getMessage();
         }
+    }
+    
+    // Handle borrow request approval
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['approve_borrow'])) {
+        $pdo = getDBConnection();
         
-        // Insert complaint into database using your schema
-        $stmt = $pdo->prepare("INSERT INTO complaints (from_user_id, against_user_id, transaction_id, reason, status) VALUES (?, ?, ?, ?, 'pending')");
-        $stmt->execute([
-            $currentUser['user_id'],
-            $targetUser['user_id'],
-            $transactionId,
-            $description
-        ]);
+        try {
+            $transactionId = $_POST['transaction_id'];
+            
+            // Update transaction status to active
+            $stmt = $pdo->prepare("UPDATE transactions SET status = 'active' WHERE transaction_id = ?");
+            $stmt->execute([$transactionId]);
+            
+            // Update game status to on_loan
+            $stmt = $pdo->prepare("UPDATE games SET status = 'on_loan' WHERE game_id = (SELECT game_id FROM transactions WHERE transaction_id = ?)");
+            $stmt->execute([$transactionId]);
+            
+            header('Location: dashboard.php?success=borrow_approved');
+            exit();
+            
+        } catch (Exception $e) {
+            $error = 'Failed to approve borrow request: ' . $e->getMessage();
+        }
+    }
+    
+    // Handle borrow request decline
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['decline_borrow'])) {
+        $pdo = getDBConnection();
         
-        // Increment complaint count for the reported user
-        $stmt = $pdo->prepare("UPDATE users SET complaints = complaints + 1 WHERE user_id = ?");
-        $stmt->execute([$targetUser['user_id']]);
+        try {
+            $transactionId = $_POST['transaction_id'];
+            
+            // Update transaction status to cancelled
+            $stmt = $pdo->prepare("UPDATE transactions SET status = 'cancelled' WHERE transaction_id = ?");
+            $stmt->execute([$transactionId]);
+            
+            // Update game status back to available
+            $stmt = $pdo->prepare("UPDATE games SET status = 'available' WHERE game_id = (SELECT game_id FROM transactions WHERE transaction_id = ?)");
+            $stmt->execute([$transactionId]);
+            
+            header('Location: dashboard.php?success=borrow_declined');
+            exit();
+            
+        } catch (Exception $e) {
+            $error = 'Failed to decline borrow request: ' . $e->getMessage();
+        }
+    }
+    
+    // Handle borrow request cancellation
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cancel_borrow'])) {
+        $pdo = getDBConnection();
         
-        header('Location: dashboard.php?success=complaint_submitted');
-        exit();
+        try {
+            $transactionId = $_POST['transaction_id'];
+            
+            // Update transaction status to cancelled
+            $stmt = $pdo->prepare("UPDATE transactions SET status = 'cancelled' WHERE transaction_id = ?");
+            $stmt->execute([$transactionId]);
+            
+            // Update game status back to available
+            $stmt = $pdo->prepare("UPDATE games SET status = 'available' WHERE game_id = (SELECT game_id FROM transactions WHERE transaction_id = ?)");
+            $stmt->execute([$transactionId]);
+            
+            header('Location: dashboard.php?success=borrow_cancelled');
+            exit();
+            
+        } catch (Exception $e) {
+            $error = 'Failed to cancel borrow request: ' . $e->getMessage();
+        }
+    }
+    
+    // Handle loan extension
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['extend_loan'])) {
+        $pdo = getDBConnection();
+        try {
+            $transactionId = $_POST['transaction_id'];
+            
+            // Update description to note extension
+            $stmt = $pdo->prepare("UPDATE transactions SET description = CONCAT(description, '\nLoan extended on ', NOW()) WHERE transaction_id = ?");
+            $stmt->execute([$transactionId]);
+            
+            header('Location: dashboard.php?success=loan_extended');
+            exit();
+            
+        } catch (Exception $e) {
+            $error = 'Failed to extend loan: ' . $e->getMessage();
+        }
+    }
+    
+    // Handle mark returned
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mark_returned'])) {
+        $pdo = getDBConnection();
+        try {
+            $transactionId = $_POST['transaction_id'];
+            
+            // 1. Update transaction status to completed
+            $stmt = $pdo->prepare("UPDATE transactions SET status = 'completed' WHERE transaction_id = ?");
+            $stmt->execute([$transactionId]);
+            
+            // 2. Update game status back to available
+            $stmt = $pdo->prepare("UPDATE games SET status = 'available' WHERE game_id = (SELECT game_id FROM transactions WHERE transaction_id = ?)");
+            $stmt->execute([$transactionId]);
+            
+            header('Location: dashboard.php?success=return_marked');
+            exit();
+            
+        } catch (Exception $e) {
+            $error = 'Failed to mark return: ' . $e->getMessage();
+        }
+    }
+    
+    // Handle delete notification
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_notification'])) {
+        $pdo = getDBConnection();
+        try {
+            $notificationId = $_POST['notification_id'];
+            
+            // Ensure the user owns the notification before deleting (security)
+            $stmt = $pdo->prepare("DELETE FROM notifications WHERE notification_id = ? AND user_id = ?");
+            $stmt->execute([$notificationId, $currentUser['user_id']]);
+            
+            header('Location: dashboard.php?success=notification_deleted');
+            exit();
+            
+        } catch (Exception $e) {
+            $error = 'Failed to delete notification: ' . $e->getMessage();
+        }
+    }
+    
+    // Handle complaint submission
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_complaint'])) {
+        $pdo = getDBConnection();
         
-    } catch (Exception $e) {
-        $error = 'Failed to submit complaint: ' . $e->getMessage();
+        try {
+            $complaintType = $_POST['complaintType'];
+            $targetUserId = (int)$_POST['targetUserId']; // Reading User ID directly from dropdown
+            $description = $_POST['complaintDescription'];
+            
+            // Validate target user exists
+            $stmt = $pdo->prepare("SELECT user_id, username FROM users WHERE user_id = ?");
+            $stmt->execute([$targetUserId]);
+            $targetUser = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$targetUser) {
+                throw new Exception("Target user not found or invalid selection.");
+            }
+            
+            if ($targetUser['user_id'] == $currentUser['user_id']) {
+                throw new Exception("Cannot file a complaint against yourself");
+            }
+            
+            // Insert complaint into database. Since transaction is removed from form, pass NULL.
+            $stmt = $pdo->prepare("INSERT INTO complaints (from_user_id, against_user_id, transaction_id, reason, status) VALUES (?, ?, NULL, ?, 'pending')");
+            $stmt->execute([
+                $currentUser['user_id'],
+                $targetUser['user_id'],
+                $description
+            ]);
+            
+            // Increment complaint count for the reported user
+            $stmt = $pdo->prepare("UPDATE users SET complaints = complaints + 1 WHERE user_id = ?");
+            $stmt->execute([$targetUser['user_id']]);
+            
+            header('Location: dashboard.php?success=complaint_submitted');
+            exit();
+            
+        } catch (Exception $e) {
+            $error = 'Failed to submit complaint: ' . $e->getMessage();
+        }
     }
 }
+// --- END ACTION HANDLERS ---
+
+// --- BEGIN DATA FETCHING ---
+$pdo = getDBConnection();
 
 // Get user's games from database
-$pdo = getDBConnection();
 $stmt = $pdo->prepare("SELECT * FROM games WHERE user_id = ?");
 $stmt->execute([$currentUser['user_id']]);
 $userGames = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Get available games from other users (for lending/borrowing)
-$stmt = $pdo->prepare("SELECT g.*, u.username, u.first_name, u.last_name, u.rating 
+// Get available games from other users (for lending/borrowing/exchange)
+// UPDATED: Filtered out games owned by suspended users and removed rating from select
+$stmt = $pdo->prepare("SELECT g.*, u.username, u.first_name, u.last_name 
                       FROM games g 
                       JOIN users u ON g.user_id = u.user_id 
                       WHERE g.status = 'available' 
                       AND g.user_id != ? 
+                      AND u.is_suspended = 0 
                       ORDER BY g.created_at DESC");
 $stmt->execute([$currentUser['user_id']]);
 $availableGames = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -315,6 +446,11 @@ $stmt = $pdo->prepare("SELECT t.*, g.title as game_title, u1.username as from_us
                       ORDER BY t.created_at DESC");
 $stmt->execute([$currentUser['user_id'], $currentUser['user_id']]);
 $userTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Get all other active users for Complaint Dropdown
+$stmt = $pdo->prepare("SELECT user_id, username, first_name, last_name FROM users WHERE user_id != ? AND is_suspended = 0 ORDER BY username ASC");
+$stmt->execute([$currentUser['user_id']]);
+$allOtherUsers = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Get user notifications
 $notifications = [];
@@ -351,6 +487,7 @@ try {
 $activeUsers = $pdo->query("SELECT COUNT(*) as count FROM users WHERE is_suspended = 0")->fetch()['count'];
 $gamesAvailable = $pdo->query("SELECT COUNT(*) as count FROM games WHERE status = 'available'")->fetch()['count'];
 $monthlyTransactions = $pdo->query("SELECT COUNT(*) as count FROM transactions WHERE MONTH(created_at) = MONTH(CURRENT_DATE()) AND YEAR(created_at) = YEAR(CURRENT_DATE())")->fetch()['count'];
+// --- END DATA FETCHING ---
 
 // Helper function to get game icon
 function getGameIcon($genre) {
@@ -369,9 +506,7 @@ function getGameIcon($genre) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GameSwap - Dashboard</title>
-    <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
         :root {
@@ -477,6 +612,15 @@ function getGameIcon($genre) {
             border-radius: 4px;
             margin-bottom: 1rem;
         }
+
+        .suspension-alert {
+            background-color: #f8d7da;
+            border-left: 4px solid #dc3545;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+            color: #721c24;
+        }
         
         .action-btn {
             border-radius: 20px;
@@ -563,7 +707,6 @@ function getGameIcon($genre) {
     </style>
 </head>
 <body>
-    <!-- Dashboard Header -->
     <header class="dashboard-header">
         <div class="container">
             <div class="row align-items-center">
@@ -578,6 +721,16 @@ function getGameIcon($genre) {
                         </button>
                         <ul class="dropdown-menu" aria-labelledby="userDropdown">
                             <li><a class="dropdown-item" href="#" data-bs-toggle="modal" data-bs-target="#editProfileModal"><i class="fas fa-user me-2"></i>Profile</a></li>
+                            
+                            <?php if (isset($currentUser['role']) && $currentUser['role'] === 'admin'): ?>
+                                <?php if ($currentUser['active_role'] === 'user'): ?>
+                                    <li><a class="dropdown-item text-danger" href="role_switch.php"><i class="fas fa-user-shield me-2"></i>Switch to Admin View</a></li>
+                                <?php else: ?>
+                                    <li><a class="dropdown-item text-primary" href="role_switch.php"><i class="fas fa-gamepad me-2"></i>Switch to User View</a></li>
+                                    <li><a class="dropdown-item text-danger" href="admin.php"><i class="fas fa-cogs me-2"></i>Go to Admin Panel</a></li>
+                                <?php endif; ?>
+                            <?php endif; ?>
+                            
                             <li><hr class="dropdown-divider"></li>
                             <li><a class="dropdown-item" href="logout.php"><i class="fas fa-sign-out-alt me-2"></i>Logout</a></li>
                         </ul>
@@ -588,14 +741,21 @@ function getGameIcon($genre) {
     </header>
 
     <div class="container">
-        <!-- Error Message -->
         <?php if (isset($error)): ?>
             <div class="alert alert-danger">
                 <?php echo htmlspecialchars($error); ?>
             </div>
         <?php endif; ?>
 
-        <!-- Success Message -->
+        <?php if ($isSuspended): ?>
+            <div class="suspension-alert text-center">
+                <i class="fas fa-exclamation-circle fa-2x mb-2 d-block"></i>
+                <h4 class="text-danger">ACCOUNT SUSPENDED</h4>
+                <p>Your account has been suspended due to accumulating 3 or more complaints. You cannot perform any transactions or manage your games.</p>
+                <p class="mb-0">Please <button class="btn btn-danger btn-sm" onclick="contactAdminForUnsuspend()">Contact Admin</button> to appeal this decision.</p>
+            </div>
+        <?php endif; ?>
+
         <?php if (isset($_GET['success'])): ?>
             <div class="alert alert-success">
                 <?php
@@ -624,6 +784,15 @@ function getGameIcon($genre) {
                     case 'complaint_submitted':
                         echo "Complaint submitted successfully! Our team will review it shortly.";
                         break;
+                    case 'loan_extended': 
+                        echo "Loan extension noted successfully!";
+                        break;
+                    case 'return_marked': 
+                        echo "Loan successfully marked as returned and game is now available!";
+                        break;
+                    case 'notification_deleted': 
+                        echo "Notification deleted successfully!";
+                        break;
                     default:
                         echo "Operation completed successfully!";
                 }
@@ -631,13 +800,13 @@ function getGameIcon($genre) {
             </div>
         <?php endif; ?>
 
-        <!-- Complaint Warning -->
-        <div class="complaint-warning" id="complaintWarning" style="<?php echo $currentUser['complaints'] >= 2 ? 'display: block;' : 'display: none;'; ?>">
-            <i class="fas fa-exclamation-triangle text-warning me-2"></i>
-            <strong>Warning:</strong> You have <span id="complaintCount"><?php echo $currentUser['complaints']; ?></span> complaints. If you receive one more complaint, your account will be suspended.
-        </div>
+        <?php if (!$isSuspended): // Hide normal warning if already suspended ?>
+            <div class="complaint-warning" id="complaintWarning" style="<?php echo $currentUser['complaints'] >= 2 ? 'display: block;' : 'display: none;'; ?>">
+                <i class="fas fa-exclamation-triangle text-warning me-2"></i>
+                <strong>Warning:</strong> You have <span id="complaintCount"><?php echo $currentUser['complaints']; ?></span> complaints. If you receive one more complaint, your account will be suspended.
+            </div>
+        <?php endif; ?>
 
-        <!-- Profile Summary -->
         <div class="dashboard-card">
             <div class="row">
                 <div class="col-md-3 text-center">
@@ -645,24 +814,20 @@ function getGameIcon($genre) {
                         <i class="fas fa-user"></i>
                     </div>
                     <h4 id="profileUserName"><?php echo htmlspecialchars($currentUser['first_name'] . ' ' . $currentUser['last_name']); ?></h4>
-                    <span class="badge bg-success" id="verificationBadge">Verified</span>
+                    <span class="badge <?php echo $isSuspended ? 'bg-danger' : 'bg-success'; ?>" id="verificationBadge"><?php echo $isSuspended ? 'SUSPENDED' : 'Verified'; ?></span>
                 </div>
                 <div class="col-md-9">
                     <h3 class="mb-3">Profile Summary</h3>
                     <div class="row mb-4">
-                        <div class="col-md-3 stats-card">
+                        <div class="col-md-4 stats-card">
                             <div class="stats-number" id="gamesOwned"><?php echo count($userGames); ?></div>
                             <div class="stats-label">Games Owned</div>
                         </div>
-                        <div class="col-md-3 stats-card">
+                        <div class="col-md-4 stats-card">
                             <div class="stats-number" id="totalTransactions"><?php echo count($userTransactions); ?></div>
                             <div class="stats-label">Transactions</div>
                         </div>
-                        <div class="col-md-3 stats-card">
-                            <div class="stats-number" id="userRating"><?php echo $currentUser['rating']; ?></div>
-                            <div class="stats-label">Rating</div>
-                        </div>
-                        <div class="col-md-3 stats-card">
+                        <div class="col-md-4 stats-card">
                             <?php
                             $activeLoanCount = 0;
                             foreach ($userTransactions as $transaction) {
@@ -676,17 +841,20 @@ function getGameIcon($genre) {
                         </div>
                     </div>
                     <div class="d-flex gap-2">
-                        <button class="btn btn-primary action-btn" data-bs-toggle="modal" data-bs-target="#addGameModal"><i class="fas fa-plus me-1"></i> Add Game</button>
-                        <button class="btn btn-outline-primary action-btn" data-bs-toggle="modal" data-bs-target="#editProfileModal"><i class="fas fa-edit me-1"></i> Edit Profile</button>
-                        <button class="btn btn-outline-success action-btn" data-bs-toggle="modal" data-bs-target="#startExchangeModal"><i class="fas fa-exchange-alt me-1"></i> Start Exchange</button>
-                        <button class="btn btn-outline-warning action-btn" data-bs-toggle="modal" data-bs-target="#fileComplaintModal"><i class="fas fa-exclamation-triangle me-1"></i> File Complaint</button>
+                        <?php if (!$isSuspended): ?>
+                            <button class="btn btn-primary action-btn" data-bs-toggle="modal" data-bs-target="#addGameModal"><i class="fas fa-plus me-1"></i> Add Game</button>
+                            <button class="btn btn-outline-primary action-btn" data-bs-toggle="modal" data-bs-target="#editProfileModal"><i class="fas fa-edit me-1"></i> Edit Profile</button>
+                            <button class="btn btn-outline-success action-btn" data-bs-toggle="modal" data-bs-target="#startExchangeModal"><i class="fas fa-exchange-alt me-1"></i> Start Exchange</button>
+                            <button class="btn btn-outline-warning action-btn" data-bs-toggle="modal" data-bs-target="#fileComplaintModal"><i class="fas fa-exclamation-triangle me-1"></i> File Complaint</button>
+                        <?php else: ?>
+                            <button class="btn btn-danger action-btn" onclick="contactAdminForUnsuspend()"><i class="fas fa-envelope me-1"></i> Contact Admin</button>
+                        <?php endif; ?>
                     </div>
                 </div>
             </div>
         </div>
 
-        <div class="row">
-            <!-- Game Collection -->
+        <div class="row" <?php echo $isSuspended ? 'style="pointer-events: none; opacity: 0.5;"' : ''; ?>>
             <div class="col-lg-8">
                 <div class="dashboard-card">
                     <div class="d-flex justify-content-between align-items-center mb-4">
@@ -706,7 +874,6 @@ function getGameIcon($genre) {
                         </div>
                     </div>
                     
-                    <!-- My Games Section -->
                     <div class="game-section" id="myGamesSection">
                         <h4 class="mb-3">My Games</h4>
                         <div class="row" id="gameCollection">
@@ -774,7 +941,6 @@ function getGameIcon($genre) {
                         </div>
                     </div>
 
-                    <!-- Available Games Section (Hidden by default) -->
                     <div class="game-section" id="availableGamesSection" style="display: none;">
                         <h4 class="mb-3">Games Available to Borrow</h4>
                         <div class="row">
@@ -795,30 +961,16 @@ function getGameIcon($genre) {
                                                 <h5 class="card-title"><?php echo htmlspecialchars($game['title']); ?></h5>
                                                 <p class="card-text text-muted"><?php echo htmlspecialchars($game['genre']); ?></p>
                                                 
-                                                <!-- Owner Information -->
                                                 <div class="owner-info">
                                                     <div class="d-flex justify-content-between align-items-center">
                                                         <span>
                                                             <i class="fas fa-user me-1"></i>
                                                             <?php echo htmlspecialchars($game['first_name'] . ' ' . $game['last_name']); ?>
                                                         </span>
-                                                        <span class="rating-stars">
-                                                            <?php
-                                                            $rating = $game['rating'];
-                                                            for ($i = 1; $i <= 5; $i++) {
-                                                                if ($i <= $rating) {
-                                                                    echo '<i class="fas fa-star"></i>';
-                                                                } else {
-                                                                    echo '<i class="far fa-star"></i>';
-                                                                }
-                                                            }
-                                                            ?>
-                                                        </span>
-                                                    </div>
+                                                        </div>
                                                     <small class="text-muted">@<?php echo htmlspecialchars($game['username']); ?></small>
                                                 </div>
                                                 
-                                                <!-- Game Details -->
                                                 <div class="mt-2">
                                                     <small class="text-muted">
                                                         <i class="fas fa-tag me-1"></i><?php echo ucfirst($game['condition']); ?> Condition
@@ -829,7 +981,6 @@ function getGameIcon($genre) {
                                                     </small>
                                                 </div>
                                                 
-                                                <!-- Borrow Button -->
                                                 <button class="btn btn-primary borrow-btn" onclick="requestBorrow(<?php echo $game['game_id']; ?>, '<?php echo htmlspecialchars($game['username']); ?>')">
                                                     <i class="fas fa-handshake me-1"></i> Request to Borrow
                                                 </button>
@@ -841,7 +992,6 @@ function getGameIcon($genre) {
                         </div>
                     </div>
 
-                    <!-- On Loan Section (Hidden by default) -->
                     <div class="game-section" id="onLoanSection" style="display: none;">
                         <h4 class="mb-3">Games Currently on Loan</h4>
                         <div class="row">
@@ -878,82 +1028,7 @@ function getGameIcon($genre) {
                         </div>
                     </div>
                 </div>
-            </div>
-            
-            <!-- Right Sidebar -->
-            <div class="col-lg-4">
-                <!-- Notifications Section -->
-                <div class="dashboard-card">
-                    <h3 class="mb-4">Notifications</h3>
-                    <div id="notificationsList">
-                        <?php if (empty($notifications)): ?>
-                            <div class="text-center py-4">
-                                <i class="fas fa-bell fa-2x text-muted mb-3"></i>
-                                <h5 class="text-muted">No Notifications</h5>
-                                <p class="text-muted">You'll see notifications about your transactions here</p>
-                            </div>
-                        <?php else: ?>
-                            <?php foreach ($notifications as $notification): ?>
-                                <div class="notification-item <?php echo $notification['is_read'] ? '' : 'notification-unread'; ?>">
-                                    <div class="d-flex justify-content-between align-items-start mb-2">
-                                        <h6><?php echo htmlspecialchars($notification['message']); ?></h6>
-                                        <small class="text-muted"><?php echo date('m/d/Y H:i', strtotime($notification['created_at'])); ?></small>
-                                    </div>
-                                    <?php if (!$notification['is_read']): ?>
-                                        <span class="badge bg-primary">New</span>
-                                    <?php endif; ?>
-                                </div>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
-                    </div>
-                </div>
 
-                <!-- My Complaints Section -->
-                <div class="dashboard-card">
-                    <h3 class="mb-4">My Complaints</h3>
-                    <div id="complaintsList">
-                        <?php if (empty($userComplaints)): ?>
-                            <div class="text-center py-4">
-                                <i class="fas fa-exclamation-triangle fa-2x text-muted mb-3"></i>
-                                <h5 class="text-muted">No Complaints Filed</h5>
-                                <p class="text-muted">Your filed complaints will appear here</p>
-                            </div>
-                        <?php else: ?>
-                            <?php foreach ($userComplaints as $complaint): ?>
-                                        <div class="complaint-item complaint-status-<?php echo $complaint['status']; ?>">
-                                    <div class="d-flex justify-content-between align-items-start mb-2">
-                                        <h6>Complaint against @<?php echo htmlspecialchars($complaint['against_username']); ?></h6>
-                                        <small class="text-muted"><?php echo date('m/d/Y', strtotime($complaint['created_at'])); ?></small>
-                                    </div>
-                                    <p class="mb-2"><strong>Reason:</strong> <?php echo htmlspecialchars($complaint['reason']); ?></p>
-                                    <div class="d-flex justify-content-between align-items-center">
-                                        <span class="badge 
-                                            <?php 
-                                            switch($complaint['status']) {
-                                                case 'pending': echo 'bg-warning'; break;
-                                                case 'resolved': echo 'bg-success'; break;
-                                                case 'dismissed': echo 'bg-secondary'; break;
-                                                default: echo 'bg-info';
-                                            }
-                                            ?>">
-                                            <?php echo ucfirst($complaint['status']); ?>
-                                        </span>
-                                        <?php if ($complaint['status'] === 'pending'): ?>
-                                            <small class="text-muted">Under review</small>
-                                        <?php endif; ?>
-                                    </div>
-                                </div>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
-                    </div>
-                    <div class="text-center mt-3">
-                        <button class="btn btn-outline-warning btn-sm" data-bs-toggle="modal" data-bs-target="#fileComplaintModal">
-                            <i class="fas fa-exclamation-triangle me-1"></i> File New Complaint
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Active Transactions -->
                 <div class="dashboard-card">
                     <h3 class="mb-4">Active Transactions</h3>
                     
@@ -966,6 +1041,11 @@ function getGameIcon($genre) {
                             </div>
                         <?php else: ?>
                             <?php foreach ($userTransactions as $transaction): ?>
+                                <?php 
+                                    // FILTER: Only show pending and active transactions
+                                    $displayStatus = $transaction['status'];
+                                    if ($displayStatus === 'cancelled' || $displayStatus === 'completed') continue;
+                                ?>
                                 <div class="transaction-item">
                                     <?php
                                     $statusBadge = '';
@@ -1027,10 +1107,25 @@ function getGameIcon($genre) {
                                                 <p class="mb-1">Game: ' . htmlspecialchars($transaction['game_title']) . '</p>
                                                 <p class="mb-2">Status: Active Loan</p>
                                             ';
-                                            $actions = $isFromUser ? '
-                                                <button class="btn btn-sm btn-outline-primary">Extend</button>
-                                                <button class="btn btn-sm btn-outline-success">Mark Returned</button>
-                                            ' : '<button class="btn btn-sm btn-outline-primary">Contact Owner</button>';
+                                            
+                                            // UPDATED ACTIONS FOR ACTIVE LOAN
+                                            if ($isFromUser) { // User is the OWNER (Can Extend/Mark Returned)
+                                                $actions = '
+                                                    <form method="POST" class="d-inline">
+                                                        <input type="hidden" name="transaction_id" value="' . $transaction['transaction_id'] . '">
+                                                        <input type="hidden" name="extend_loan" value="1">
+                                                        <button type="submit" class="btn btn-sm btn-outline-primary">Extend</button>
+                                                    </form>
+                                                    <form method="POST" class="d-inline">
+                                                        <input type="hidden" name="transaction_id" value="' . $transaction['transaction_id'] . '">
+                                                        <input type="hidden" name="mark_returned" value="1">
+                                                        <button type="submit" class="btn btn-sm btn-outline-success">Mark Returned</button>
+                                                    </form>
+                                                    <button onclick="contactUser(\'' . htmlspecialchars($otherUser) . '\')" class="btn btn-sm btn-outline-info">Contact Borrower</button>
+                                                ';
+                                            } else { // User is the BORROWER (Can only Contact Owner)
+                                                $actions = '<button onclick="contactUser(\'' . htmlspecialchars($otherUser) . '\')" class="btn btn-sm btn-outline-primary">Contact Owner</button>';
+                                            }
                                         }
                                     } else if ($transaction['type'] === 'sale') {
                                         $details = '
@@ -1067,8 +1162,91 @@ function getGameIcon($genre) {
                         <?php endif; ?>
                     </div>
                 </div>
+
+            </div>
+            
+            <div class="col-lg-4">
+                <div class="dashboard-card">
+                    <h3 class="mb-4">Notifications</h3>
+                    <div id="notificationsList">
+                        <?php if (empty($notifications)): ?>
+                            <div class="text-center py-4">
+                                <i class="fas fa-bell fa-2x text-muted mb-3"></i>
+                                <h5 class="text-muted">No Notifications</h5>
+                                <p class="text-muted">You'll see notifications about your transactions here</p>
+                            </div>
+                        <?php else: ?>
+                            <?php foreach ($notifications as $notification): ?>
+                                <div class="notification-item <?php echo $notification['is_read'] ? '' : 'notification-unread'; ?>">
+                                    <div class="d-flex justify-content-between align-items-start mb-2">
+                                        <h6 class="mb-0"><?php echo htmlspecialchars($notification['message']); ?></h6>
+                                        <small class="text-muted text-nowrap"><?php echo date('m/d/Y H:i', strtotime($notification['created_at'])); ?></small>
+                                    </div>
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <?php if (!$notification['is_read']): ?>
+                                            <span class="badge bg-primary me-2">New</span>
+                                        <?php endif; ?>
+                                        
+                                        <form method="POST" class="ms-auto">
+                                            <input type="hidden" name="notification_id" value="<?php echo $notification['notification_id']; ?>">
+                                            <input type="hidden" name="delete_notification" value="1">
+                                            <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2" 
+                                                    onclick="return confirm('Are you sure you want to delete this notification?');"
+                                                    title="Delete Notification">
+                                                <i class="fas fa-trash"></i> Delete
+                                            </button>
+                                        </form>
+                                        </div>
+                                </div>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <div class="dashboard-card">
+                    <h3 class="mb-4">My Complaints</h3>
+                    <div id="complaintsList">
+                        <?php if (empty($userComplaints)): ?>
+                            <div class="text-center py-4">
+                                <i class="fas fa-exclamation-triangle fa-2x text-muted mb-3"></i>
+                                <h5 class="text-muted">No Complaints Filed</h5>
+                                <p class="text-muted">Your filed complaints will appear here</p>
+                            </div>
+                        <?php else: ?>
+                            <?php foreach ($userComplaints as $complaint): ?>
+                                        <div class="complaint-item complaint-status-<?php echo $complaint['status']; ?>">
+                                    <div class="d-flex justify-content-between align-items-start mb-2">
+                                        <h6>Complaint against @<?php echo htmlspecialchars($complaint['against_username']); ?></h6>
+                                        <small class="text-muted"><?php echo date('m/d/Y', strtotime($complaint['created_at'])); ?></small>
+                                    </div>
+                                    <p class="mb-2"><strong>Reason:</strong> <?php echo htmlspecialchars($complaint['reason']); ?></p>
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <span class="badge 
+                                            <?php 
+                                            switch($complaint['status']) {
+                                                case 'pending': echo 'bg-warning'; break;
+                                                case 'resolved': echo 'bg-success'; break;
+                                                case 'dismissed': echo 'bg-secondary'; break;
+                                                default: echo 'bg-info';
+                                            }
+                                            ?>">
+                                            <?php echo ucfirst($complaint['status']); ?>
+                                        </span>
+                                        <?php if ($complaint['status'] === 'pending'): ?>
+                                            <small class="text-muted">Under review</small>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </div>
+                    <div class="text-center mt-3">
+                        <button class="btn btn-outline-warning btn-sm" data-bs-toggle="modal" data-bs-target="#fileComplaintModal">
+                            <i class="fas fa-exclamation-triangle me-1"></i> File New Complaint
+                        </button>
+                    </div>
+                </div>
                 
-                <!-- Quick Stats -->
                 <div class="dashboard-card">
                     <h4 class="mb-3">Community Stats</h4>
                     <div class="mb-3">
@@ -1103,7 +1281,6 @@ function getGameIcon($genre) {
         </div>
     </div>
 
-    <!-- Add Game Modal -->
     <div class="modal fade" id="addGameModal" tabindex="-1" aria-labelledby="addGameModalLabel" aria-hidden="true">
         <div class="modal-dialog">
             <div class="modal-content">
@@ -1153,6 +1330,31 @@ function getGameIcon($genre) {
                             <label for="gameAge" class="form-label">Game Age (years)</label>
                             <input type="number" class="form-control" id="gameAge" name="gameAge" min="0" required>
                         </div>
+
+                        <hr>
+                        <h5>Listing Options</h5>
+
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" name="isForSale" id="isForSale">
+                            <label class="form-check-label" for="isForSale">
+                                List for Sale (Requires Age ≥ 1 & Good/Excellent Condition)
+                            </label>
+                        </div>
+                        <div class="mb-3">
+                            <label for="salePrice" class="form-label">Sale Price</label>
+                            <input type="number" step="0.01" class="form-control" id="salePrice" name="salePrice" placeholder="E.g., 59.99">
+                        </div>
+
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" name="isForLend" id="isForLend">
+                            <label class="form-check-label" for="isForLend">
+                                List for Lending (Requires Good/Excellent Condition)
+                            </label>
+                        </div>
+                        <div class="mb-3">
+                            <label for="lendRate" class="form-label">Lend Rate (Daily/Weekly)</label>
+                            <input type="number" step="0.01" class="form-control" id="lendRate" name="lendRate" placeholder="E.g., 2.50">
+                        </div>
                     </div>
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -1163,7 +1365,6 @@ function getGameIcon($genre) {
         </div>
     </div>
 
-    <!-- Edit Profile Modal -->
     <div class="modal fade" id="editProfileModal" tabindex="-1" aria-labelledby="editProfileModalLabel" aria-hidden="true">
         <div class="modal-dialog">
             <div class="modal-content">
@@ -1200,7 +1401,6 @@ function getGameIcon($genre) {
         </div>
     </div>
 
-    <!-- Start Exchange Modal -->
     <div class="modal fade" id="startExchangeModal" tabindex="-1" aria-labelledby="startExchangeModalLabel" aria-hidden="true">
         <div class="modal-dialog">
             <div class="modal-content">
@@ -1215,43 +1415,52 @@ function getGameIcon($genre) {
                             <label for="exchangeGame" class="form-label">Select Your Game to Exchange</label>
                             <select class="form-select" id="exchangeGame" name="exchangeGame" required>
                                 <option value="">Select a Game</option>
-                                <?php foreach ($userGames as $game): ?>
-                                    <?php if ($game['status'] === 'available'): ?>
-                                        <option value="<?php echo $game['game_id']; ?>">
-                                            <?php echo htmlspecialchars($game['title']); ?> (<?php echo htmlspecialchars($game['genre']); ?>)
-                                        </option>
-                                    <?php endif; ?>
+                                <?php 
+                                $availableGamesUser = array_filter($userGames, function($game) {
+                                    return $game['status'] === 'available';
+                                });
+                                if (empty($availableGamesUser)): ?>
+                                    <option value="" disabled>-- No available games --</option>
+                                <?php endif; ?>
+                                <?php foreach ($availableGamesUser as $game): ?>
+                                    <option value="<?php echo $game['game_id']; ?>">
+                                        <?php echo htmlspecialchars($game['title']); ?> (<?php echo htmlspecialchars($game['genre']); ?>)
+                                    </option>
                                 <?php endforeach; ?>
                             </select>
                             <?php 
-                            $availableGames = array_filter($userGames, function($game) {
-                                return $game['status'] === 'available';
-                            });
-                            if (empty($availableGames)): ?>
+                            if (empty($availableGamesUser)): ?>
                                 <div class="text-danger mt-1">
                                     <small>You need to have available games to start an exchange.</small>
                                 </div>
                             <?php endif; ?>
                         </div>
+                        
                         <div class="mb-3">
-                            <label for="targetUsername" class="form-label">Username to Exchange With</label>
-                            <input type="text" class="form-control" id="targetUsername" name="targetUsername" placeholder="Enter username" required>
+                            <label for="targetGameId" class="form-label">Game You Want to Receive</label>
+                            <select class="form-select" id="targetGameId" name="targetGameId" required>
+                                <option value="">Select Game to Receive</option>
+                                <?php if (empty($availableGames)): ?>
+                                    <option value="" disabled>-- No games available from other users --</option>
+                                <?php endif; ?>
+                                <?php foreach ($availableGames as $game): ?>
+                                    <option value="<?php echo $game['game_id']; ?>">
+                                        <?php echo htmlspecialchars($game['title']) . ' (' . htmlspecialchars($game['username']) . ')'; ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
                         </div>
-                        <div class="mb-3">
-                            <label for="targetGame" class="form-label">Game You Want to Receive</label>
-                            <input type="text" class="form-control" id="targetGame" name="targetGame" placeholder="Enter game title" required>
-                        </div>
+
                     </div>
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                        <button type="submit" class="btn btn-primary" <?php echo empty($availableGames) ? 'disabled' : ''; ?>>Start Exchange</button>
+                        <button type="submit" class="btn btn-primary" <?php echo empty($availableGamesUser) ? 'disabled' : ''; ?>>Start Exchange</button>
                     </div>
                 </form>
             </div>
         </div>
     </div>
 
-    <!-- File Complaint Modal -->
     <div class="modal fade" id="fileComplaintModal" tabindex="-1" aria-labelledby="fileComplaintModalLabel" aria-hidden="true">
         <div class="modal-dialog">
             <div class="modal-content">
@@ -1275,22 +1484,19 @@ function getGameIcon($genre) {
                                 <option value="other">Other</option>
                             </select>
                         </div>
+                        
                         <div class="mb-3">
-                            <label for="targetUsername" class="form-label">Username of User You're Complaining About</label>
-                            <input type="text" class="form-control" id="targetUsername" name="targetUsername" placeholder="Enter username" required>
-                        </div>
-                        <div class="mb-3">
-                            <label for="transaction_id" class="form-label">Related Transaction (Optional)</label>
-                            <select class="form-select" id="transaction_id" name="transaction_id">
-                                <option value="">Select Transaction (Optional)</option>
-                                <?php foreach ($userTransactions as $transaction): ?>
-                                    <option value="<?php echo $transaction['transaction_id']; ?>">
-                                        <?php echo htmlspecialchars($transaction['type']); ?> - <?php echo htmlspecialchars($transaction['game_title']); ?> 
-                                        (<?php echo $transaction['from_username'] == $currentUser['username'] ? 'To: ' . $transaction['to_username'] : 'From: ' . $transaction['from_username']; ?>)
+                            <label for="targetUserId" class="form-label">User You're Complaining About</label>
+                            <select class="form-select" id="targetUserId" name="targetUserId" required>
+                                <option value="">Select User</option>
+                                <?php foreach ($allOtherUsers as $user): ?>
+                                    <option value="<?php echo $user['user_id']; ?>">
+                                        <?php echo htmlspecialchars($user['first_name'] . ' ' . $user['last_name']) . ' (@' . htmlspecialchars($user['username']) . ')'; ?>
                                     </option>
                                 <?php endforeach; ?>
                             </select>
                         </div>
+                        
                         <div class="mb-3">
                             <label for="complaintDescription" class="form-label">Complaint Description</label>
                             <textarea class="form-control" id="complaintDescription" name="complaintDescription" rows="4" placeholder="Please provide detailed information about your complaint..." required></textarea>
@@ -1306,7 +1512,6 @@ function getGameIcon($genre) {
         </div>
     </div>
 
-    <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
     
     <script>
@@ -1342,15 +1547,15 @@ function getGameIcon($genre) {
 
         // Game Action Functions
         function sellGame(gameId) {
-            alert(`Starting sale process for game ID: ${gameId}`);
+            alert(`Game ID ${gameId} is set for sale/lending via the Add Game modal options.`);
         }
 
         function lendGame(gameId) {
-            alert(`Starting lending process for game ID: ${gameId}`);
+            alert(`Game ID ${gameId} is set for sale/lending via the Add Game modal options.`);
         }
 
         function exchangeGame(gameId) {
-            alert(`Starting exchange process for game ID: ${gameId}`);
+            alert(`Game ID ${gameId} is set for sale/lending via the Add Game modal options.`);
         }
 
         function requestBorrow(gameId, username) {
@@ -1384,14 +1589,19 @@ function getGameIcon($genre) {
             }
         }
 
-        // Auto-focus on username field when exchange modal opens
-        document.getElementById('startExchangeModal').addEventListener('shown.bs.modal', function () {
-            document.getElementById('targetUsername').focus();
-        });
+        // JS FUNCTION: Contact User
+        function contactUser(username) {
+            alert(`Initiating contact with user: @${username}. Please use the email provided in their profile to discuss.`);
+        }
 
-        // Auto-focus on username field when complaint modal opens
+        // JS FUNCTION: Contact Admin for unsuspension (NEW)
+        function contactAdminForUnsuspend() {
+            alert("To request unsuspension, please contact the site administrator at gameswap.admin@example.com (placeholder) with your username and a reason for appeal.");
+        }
+
+        // Auto-focus on description field when complaint modal opens (User selection handled by dropdown)
         document.getElementById('fileComplaintModal').addEventListener('shown.bs.modal', function () {
-            document.getElementById('targetUsername').focus();
+            document.getElementById('complaintDescription').focus();
         });
     </script>
 </body>

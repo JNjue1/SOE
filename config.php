@@ -45,8 +45,49 @@ function requireLogin() {
     }
 }
 
-// Get current user
+// Get current user - UPDATED to check DB for fresh status and enforce suspension
 function getCurrentUser() {
-    return $_SESSION['current_user'] ?? null;
+    if (!isset($_SESSION['current_user']) || !isset($_SESSION['current_user']['user_id'])) {
+        return null;
+    }
+    
+    $pdo = getDBConnection();
+    $userId = $_SESSION['current_user']['user_id'];
+    
+    // 1. Fetch fresh user data from DB
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE user_id = ?");
+    $stmt->execute([$userId]);
+    $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$user) {
+        // User not found, log out for safety
+        session_destroy();
+        header('Location: index.php');
+        exit();
+    }
+    
+    // 2. Suspension Logic: Check complaints >= 3 and suspend if necessary
+    if ((int)$user['complaints'] >= 3 && (int)$user['is_suspended'] === 0) {
+        $user['is_suspended'] = 1;
+        
+        // Update DB to suspend account
+        $stmt = $pdo->prepare("UPDATE users SET is_suspended = 1 WHERE user_id = ?");
+        $stmt->execute([$userId]);
+    }
+    
+    // 3. Update active role logic
+    if (isset($user['role']) && $user['role'] === 'admin') {
+        if (!isset($_SESSION['active_role'])) {
+            $_SESSION['active_role'] = 'admin';
+        }
+    } else {
+        $_SESSION['active_role'] = 'user';
+    }
+    
+    // 4. Update session and return current user data
+    $user['active_role'] = $_SESSION['active_role'];
+    $_SESSION['current_user'] = $user; 
+    
+    return $user;
 }
 ?>

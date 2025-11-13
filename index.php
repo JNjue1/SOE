@@ -21,6 +21,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
         if ($user && verifyPassword($password, $user['password_hash'])) {
             // Store user in session
             $_SESSION['current_user'] = $user;
+            
+            // Check if user is an admin and should be redirected to admin panel view first
+            if (isset($user['role']) && $user['role'] === 'admin') {
+                // Initialize active_role to 'admin' upon login for admins
+                $_SESSION['active_role'] = 'admin';
+                header('Location: admin.php');
+                exit();
+            }
+            
             header('Location: dashboard.php');
             exit();
         } else {
@@ -35,9 +44,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GameSwap - Login</title>
-    <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
         :root {
@@ -49,18 +56,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
             --warning: #f72585;
         }
         
+        /* UPDATED VIBRANT BACKGROUND CSS */
         body {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(-45deg, #ff00cc, #3333ff, #00ffff, #ff00cc);
+            background-size: 400% 400%;
+            animation: gradientShift 15s ease infinite;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             min-height: 100vh;
             display: flex;
             align-items: center;
         }
-        
+
+        @keyframes gradientShift {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        /* END UPDATED CSS */
+
         .auth-container {
             background: white;
             border-radius: 15px;
-            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.3); /* Increased shadow for contrast */
             overflow: hidden;
             max-width: 400px;
             width: 100%;
@@ -129,7 +146,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
     </style>
 </head>
 <body>
-    <!-- Login Form -->
     <div class="auth-container">
         <div class="auth-header">
             <h1><i class="fas fa-gamepad me-2"></i>GameSwap</h1>
@@ -166,7 +182,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
         </div>
     </div>
 
-    <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
